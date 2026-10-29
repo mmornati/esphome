@@ -48,6 +48,10 @@ class ZigbeeOTAComponent : public ota::OTAComponent, public ZigbeeOTAListener, p
 #endif
 
   void on_ota_action(ezb_zcl_core_action_callback_id_t callback_id, void *message) override;
+#ifdef USE_ZIGBEE_OTA_CONFIRM
+  /// A frame from the coordinator arrived (Zigbee task).
+  void on_coordinator_frame() { this->server_answered_ = true; }
+#endif
 
  protected:
   enum class ImageFormat : uint8_t { NONE, RAW, ZLIB };
@@ -92,8 +96,9 @@ class ZigbeeOTAComponent : public ota::OTAComponent, public ZigbeeOTAListener, p
   deep_sleep::DeepSleepComponent *deep_sleep_{nullptr};
 #endif
 #ifdef USE_ZIGBEE_OTA_CONFIRM
-  // A new image stays unconfirmed (bootloader rollback armed) until the OTA
-  // server answers: an image that boots but cannot reach the Zigbee network
+  // A new image stays unconfirmed (bootloader rollback armed) until the
+  // coordinator is heard (any frame from it, or an answer to Query Next
+  // Image): an image that boots but cannot reach the Zigbee network
   // could not be updated again, so it rolls back after confirm_timeout_ms_.
   safe_mode::SafeModeComponent *safe_mode_{nullptr};
   uint32_t confirm_timeout_ms_{0};

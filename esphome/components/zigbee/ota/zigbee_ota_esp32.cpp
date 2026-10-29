@@ -7,6 +7,7 @@
 
 #include "esp_ota_ops.h"
 #include "esp_zigbee.h"
+#include "ezbee/aps.h"
 #include "ezbee/zcl/cluster/ota_upgrade.h"
 #include "miniz.h"
 
@@ -44,6 +45,23 @@ static constexpr uint32_t CONFIRM_QUERY_MS = 30000;
 // After a query, stay awake (no deep sleep) this long for the answer.
 static constexpr uint32_t QUERY_ANSWER_MS = 15000;
 
+#ifdef USE_ZIGBEE_OTA_CONFIRM
+static ZigbeeOTAComponent *pending_confirm_instance = nullptr;  // NOLINT
+
+// Any frame from the coordinator proves the new image reaches the network:
+// Zigbee2MQTT re-interviews a device right after the announce that follows an
+// update, but answers Query Next Image only once per update_check_interval (a
+// day by default), so its answer alone is not enough. On the Zigbee task;
+// never consumes the frame.
+static bool on_aps_indication(const ezb_apsde_data_ind_t *ind) {
+  if (pending_confirm_instance != nullptr && ind->status == 0 && ind->src_address.addr_mode == EZB_ADDR_MODE_SHORT &&
+      ind->src_address.u.short_addr == 0x0000) {
+    pending_confirm_instance->on_coordinator_frame();
+  }
+  return false;
+}
+#endif
+
 void ZigbeeOTAComponent::setup() {
   this->parent_->set_ota_listener(this);
 #ifdef USE_ZIGBEE_OTA_CONFIRM
@@ -54,7 +72,7 @@ void ZigbeeOTAComponent::setup() {
     this->safe_mode_->hold_app_confirmation();
     this->pending_confirm_ = true;
     this->boot_ms_ = millis();
-    ESP_LOGI(TAG, "New image, confirmed once the OTA server answers (rollback after %" PRIu32 " s)",
+    ESP_LOGI(TAG, "New image, confirmed once the coordinator is heard (rollback after %" PRIu32 " s)",
              this->confirm_timeout_ms_ / 1000);
   }
 #endif
@@ -62,6 +80,12 @@ void ZigbeeOTAComponent::setup() {
     esp_zigbee_lock_acquire(portMAX_DELAY);
     ezb_zcl_ota_upgrade_set_download_block_size(this->endpoint_, this->block_size_);
     ezb_zcl_ota_upgrade_set_download_retry(this->endpoint_, BLOCK_RETRIES, BLOCK_RETRY_MS);
+#ifdef USE_ZIGBEE_OTA_CONFIRM
+    if (this->pending_confirm_) {
+      pending_confirm_instance = this;
+      ezb_apsde_data_indication_handler_register(on_aps_indication);
+    }
+#endif
     esp_zigbee_lock_release();
   });
 }
@@ -133,10 +157,11 @@ void ZigbeeOTAComponent::loop() {
 void ZigbeeOTAComponent::confirm_loop_(uint32_t now) {
   if (this->server_answered_.load()) {
     this->pending_confirm_ = false;
-    ESP_LOGI(TAG, "OTA server answered, new image confirmed");
+    pending_confirm_instance = nullptr;
+    ESP_LOGI(TAG, "Coordinator reached, new image confirmed");
     this->safe_mode_->release_app_confirmation();
   } else if (now - this->boot_ms_ > this->confirm_timeout_ms_) {
-    ESP_LOGE(TAG, "No answer from the OTA server within %" PRIu32 " s, rolling back", this->confirm_timeout_ms_ / 1000);
+    ESP_LOGE(TAG, "Nothing from the coordinator within %" PRIu32 " s, rolling back", this->confirm_timeout_ms_ / 1000);
     App.run_safe_shutdown_hooks();
     esp_ota_mark_app_invalid_rollback_and_reboot();
   } else if (this->parent_->is_joined() &&
