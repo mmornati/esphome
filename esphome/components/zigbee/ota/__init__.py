@@ -34,6 +34,8 @@ CONF_FILE_VERSION = "file_version"
 CONF_BLOCK_SIZE = "block_size"
 CONF_COMPRESS = "compress"
 CONF_CONFIRM_TIMEOUT = "confirm_timeout"
+CONF_FAST_POLL_INTERVAL = "fast_poll_interval"
+CONF_QUERY_ON_JOIN = "query_on_join"
 
 OTA_FILE_NAME = "firmware.zigbee.ota"
 PACKER_SCRIPT = "make_zigbee_ota.py"
@@ -68,6 +70,15 @@ CONFIG_SCHEMA = cv.All(
             cv.Optional(
                 CONF_CONFIRM_TIMEOUT, default="10min"
             ): cv.positive_time_period_milliseconds,
+            # Sleepy end device: poll the parent this often while an update
+            # runs (every block waits at the parent until the next poll).
+            cv.Optional(
+                CONF_FAST_POLL_INTERVAL, default="50ms"
+            ): cv.positive_time_period_milliseconds,
+            # Ask the coordinator for an image once joined after boot, so an
+            # update scheduled there starts when the device wakes. Defaults to
+            # on for a sleepy end device.
+            cv.Optional(CONF_QUERY_ON_JOIN): cv.boolean,
         }
     )
     .extend(BASE_OTA_SCHEMA)
@@ -92,6 +103,14 @@ async def to_code(config: ConfigType) -> None:
     cg.add(var.set_file_version(file_version))
     cg.add(var.set_manufacturer_code(config[CONF_MANUFACTURER_CODE]))
     cg.add(var.set_image_type(config[CONF_IMAGE_TYPE]))
+    cg.add(var.set_fast_poll_interval(config[CONF_FAST_POLL_INTERVAL]))
+    sleepy = bool((CORE.config.get("zigbee") or {}).get("sleepy"))
+    if config.get(CONF_QUERY_ON_JOIN, sleepy):
+        cg.add(var.set_query_on_join(True))
+    deep_sleep_conf = CORE.config.get("deep_sleep") or {}
+    if CONF_ID in deep_sleep_conf:
+        # Stays awake from the query to the end of the download.
+        cg.add(var.set_deep_sleep(await cg.get_variable(deep_sleep_conf[CONF_ID])))
     safe_mode_conf = CORE.config.get("safe_mode") or {}
     if config[CONF_CONFIRM_TIMEOUT] and CONF_ID in safe_mode_conf:
         cg.add_define("USE_ZIGBEE_OTA_CONFIRM")
