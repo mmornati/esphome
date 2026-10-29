@@ -42,7 +42,7 @@ class ZigbeeOTAComponent : public ota::OTAComponent, public ZigbeeOTAListener, p
   void on_ota_action(ezb_zcl_core_action_callback_id_t callback_id, void *message) override;
 
  protected:
-  enum class ImageFormat : uint8_t { NONE, RAW, ZLIB };
+  enum class ImageFormat : uint8_t { NONE, RAW, ZLIB, DELTA };
 
   ezb_zcl_status_t on_start_(uint32_t file_size, uint32_t file_version);
   ezb_zcl_status_t on_receiving_(uint32_t block_offset, const uint8_t *data, uint32_t len);
@@ -53,7 +53,9 @@ class ZigbeeOTAComponent : public ota::OTAComponent, public ZigbeeOTAListener, p
   bool write_element_(const uint8_t *data, uint32_t len, bool last);
   bool inflate_(const uint8_t *data, uint32_t len, bool last);
   bool write_image_(const uint8_t *data, size_t len);
-  void release_inflater_();
+  bool write_delta_(const uint8_t *data, uint32_t len);
+  bool finish_element_();
+  void release_decoders_();
   void end_download_();
   void reset_upgrade_status_();
   void resync_file_offset_(uint32_t block_len);
@@ -93,6 +95,10 @@ class ZigbeeOTAComponent : public ota::OTAComponent, public ZigbeeOTAListener, p
   uint8_t *window_{nullptr};
   size_t window_pos_{0};
   bool inflate_done_{false};
+  // Delta: header (magic, validation hash of the base image) then the patch.
+  void *delta_{nullptr};  // esp_delta_ota_handle_t
+  uint8_t delta_header_[64]{};
+  uint8_t delta_header_len_{0};
   bool failed_{false};
   uint8_t last_percent_{0};
   uint8_t resyncs_{0};
