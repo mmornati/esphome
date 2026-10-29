@@ -79,9 +79,10 @@ CONFIG_SCHEMA = cv.All(
             cv.Optional(CONF_BLOCK_SIZE, default=50): cv.int_range(min=16, max=254),
             # zlib-compress the image in the OTA file (about 60 % of the size).
             cv.Optional(CONF_COMPRESS, default=True): cv.boolean,
-            # A new image is confirmed only once the OTA server answers (Query
-            # Next Image); without an answer in this time the bootloader rolls
-            # back to the previous image. 0s leaves it to safe_mode alone.
+            # A new image is confirmed only once the coordinator is heard (any
+            # frame from it, or an answer to Query Next Image); without that in
+            # this time the bootloader rolls back to the previous image. 0s
+            # leaves it to safe_mode alone.
             cv.Optional(
                 CONF_CONFIRM_TIMEOUT, default="10min"
             ): cv.positive_time_period_milliseconds,
