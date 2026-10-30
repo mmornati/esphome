@@ -83,7 +83,7 @@ class ZigbeeOTAComponent : public ota::OTAComponent, public ZigbeeOTAListener, p
   uint16_t image_type_{0};
   // Sleepy end device: every block waits at the parent until the next poll, so
   // the poll interval sets the speed; it is fast_poll_ms_ while an update runs.
-  uint32_t fast_poll_ms_{50};
+  uint32_t fast_poll_ms_{250};
   uint32_t saved_poll_ms_{0};
   // Ask the server for an image once joined after boot, so an update scheduled
   // in the coordinator starts when a sleeping device wakes.

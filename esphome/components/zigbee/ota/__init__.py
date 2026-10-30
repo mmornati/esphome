@@ -73,8 +73,10 @@ CONFIG_SCHEMA = cv.All(
             ): cv.positive_time_period_milliseconds,
             # Sleepy end device: poll the parent this often while an update
             # runs (every block waits at the parent until the next poll).
+            # 50 ms made the device lose its parent dozens of times per
+            # download; 250 ms kept the same speed with few link failures.
             cv.Optional(
-                CONF_FAST_POLL_INTERVAL, default="50ms"
+                CONF_FAST_POLL_INTERVAL, default="250ms"
             ): cv.positive_time_period_milliseconds,
             # Ask the coordinator for an image once joined after boot, so an
             # update scheduled there starts when the device wakes. Defaults to
