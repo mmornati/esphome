@@ -87,6 +87,7 @@ class ZigbeeComponent final : public Component {
 
   // True if the device has joined a network and is ready to send and receive messages.
   bool is_joined() { return this->joined_; }
+  bool is_sleepy() const { return this->sleepy_; }
 
  protected:
   bool sleepy_{false};

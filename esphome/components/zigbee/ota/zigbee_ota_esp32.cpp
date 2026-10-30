@@ -17,7 +17,7 @@
 
 namespace esphome::zigbee {
 
-static const char *const TAG = "zigbee.ota";
+ESPHOME_LOG_TAG(TAG, "zigbee.ota");
 
 // OTA file layout (ZCL spec 11.4): a header whose length sits at offset 6, then
 // sub-elements of tag (2 bytes) + length (4 bytes) + data. The app image is in
@@ -42,6 +42,11 @@ static constexpr uint32_t REBOOT_DELAY_MAX_S = 86400;
 static constexpr uint8_t MAX_RESYNCS = 50;
 // While a new image waits for confirmation, ask the server this often.
 static constexpr uint32_t CONFIRM_QUERY_MS = 30000;
+// After a query, stay awake (no deep sleep) this long for the answer.
+static constexpr uint32_t QUERY_ANSWER_MS = 15000;
+// Join queries sent when no offer follows (a rejoin can lose the query or the answer).
+static constexpr uint8_t JOIN_QUERIES = 3;
+static constexpr uint32_t JOIN_QUERY_RETRY_MS = 30000;
 
 #ifdef USE_ZIGBEE_OTA_CONFIRM
 static ZigbeeOTAComponent *pending_confirm_instance = nullptr;  // NOLINT
@@ -104,6 +109,30 @@ void ZigbeeOTAComponent::loop() {
     this->confirm_loop_(now);
 #endif
 
+  if (this->query_on_join_ && this->joined_ms_ == 0 && this->parent_->is_joined())
+    this->joined_ms_ = now == 0 ? 1 : now;
+  if (this->query_on_join_ && this->joined_ms_ != 0 && this->join_queries_ < JOIN_QUERIES && !this->updating_.load() &&
+      this->parent_->is_joined() &&
+      (this->join_queries_ == 0 ? now - this->joined_ms_ >= this->join_query_delay_ms_
+                                : now - this->query_sent_ms_ >= JOIN_QUERY_RETRY_MS)) {
+    this->join_queries_++;
+    this->query_sent_ms_ = now;
+#ifdef USE_DEEP_SLEEP
+    if (this->deep_sleep_ != nullptr) {
+      this->awaiting_answer_ = true;
+      this->deep_sleep_->prevent_deep_sleep();
+    }
+#endif
+    this->send_query_();
+  }
+#ifdef USE_DEEP_SLEEP
+  // No answer (or no offer) in time: let the device sleep again.
+  if (this->awaiting_answer_.load() && !this->updating_.load() && now - this->query_sent_ms_ > QUERY_ANSWER_MS) {
+    this->awaiting_answer_ = false;
+    this->deep_sleep_->allow_deep_sleep();
+  }
+#endif
+
   if (this->reboot_pending_.load()) {
     if (this->reboot_at_ms_ == 0) {
       const uint32_t delay_ms = std::max(this->reboot_delay_ms_.load(), REBOOT_DELAY_MIN_MS);
@@ -150,6 +179,8 @@ void ZigbeeOTAComponent::confirm_loop_(uint32_t now) {
   }
 }
 
+#endif
+
 void ZigbeeOTAComponent::send_query_() {
   ezb_zcl_ota_upgrade_query_next_image_req_cmd_t req = {};
   req.cmd_ctrl.dst_addr.addr_mode = EZB_ADDR_MODE_SHORT;
@@ -166,7 +197,31 @@ void ZigbeeOTAComponent::send_query_() {
   esp_zigbee_lock_release();
   ESP_LOGD(TAG, "Query Next Image sent (%d)", err);
 }
+
+// From both tasks: the stack calls it on its own task, the stall check from
+// the main loop holding the stack's lock.
+void ZigbeeOTAComponent::set_updating_(bool updating) {
+  if (this->updating_.exchange(updating) == updating)
+    return;
+  if (this->parent_->is_sleepy()) {
+    if (updating) {
+      this->saved_poll_ms_ = ezb_nwk_get_keepalive_interval();
+      ezb_nwk_set_keepalive_interval(this->fast_poll_ms_);
+    } else if (this->saved_poll_ms_ != 0) {
+      ezb_nwk_set_keepalive_interval(this->saved_poll_ms_);
+    }
+    ESP_LOGD(TAG, "Poll every %" PRIu32 " ms", updating ? this->fast_poll_ms_ : this->saved_poll_ms_);
+  }
+#ifdef USE_DEEP_SLEEP
+  if (this->deep_sleep_ != nullptr) {
+    if (updating) {
+      this->deep_sleep_->prevent_deep_sleep();
+    } else {
+      this->deep_sleep_->allow_deep_sleep();
+    }
+  }
 #endif
+}
 
 void ZigbeeOTAComponent::notify_(ota::OTAState state, float progress, uint8_t error) {
 #ifdef USE_OTA_STATE_LISTENER
@@ -181,11 +236,18 @@ void ZigbeeOTAComponent::on_ota_action(ezb_zcl_core_action_callback_id_t callbac
     // Any answer, "no image" included, proves the round trip to the server.
     this->server_answered_ = true;
 #endif
+    if (msg->in.image.status != EZB_ZCL_OTA_UPGRADE_STATUS_CODE_SUCCESS && this->awaiting_answer_.exchange(false)) {
+#ifdef USE_DEEP_SLEEP
+      this->deep_sleep_->allow_deep_sleep();
+#endif
+    }
     if (msg->in.image.status == EZB_ZCL_OTA_UPGRADE_STATUS_CODE_SUCCESS) {
       ESP_LOGI(TAG, "Image offered: type 0x%04X, version 0x%08" PRIX32 ", %" PRIu32 " bytes", msg->in.image.image_type,
                msg->in.image.file_version, msg->in.image.size);
     } else {
       ESP_LOGD(TAG, "No image available (0x%02X)", msg->in.image.status);
+      // The server answered: no need to ask again after the join.
+      this->join_queries_ = JOIN_QUERIES;
     }
     msg->out.result = EZB_ZCL_STATUS_SUCCESS;
     return;
@@ -271,6 +333,8 @@ ezb_zcl_status_t ZigbeeOTAComponent::on_start_(uint32_t file_size, uint32_t file
     return EZB_ZCL_STATUS_ABORT;
   }
   this->downloading_ = true;
+  this->awaiting_answer_ = false;
+  this->set_updating_(true);
   this->notify_(ota::OTA_STARTED, 0.0f, 0);
   return EZB_ZCL_STATUS_SUCCESS;
 }
@@ -412,8 +476,9 @@ void ZigbeeOTAComponent::on_abort_() {
     // The new image was already selected: boot the running one again.
     ESP_LOGW(TAG, "Update aborted after the image check");
     esp_err_t err = esp_ota_set_boot_partition(esp_ota_get_running_partition());
-    if (err != ESP_OK)
+    if (err != ESP_OK) {
       ESP_LOGE(TAG, "Could not select the running image again: %s", esp_err_to_name(err));
+    }
     this->ended_ = false;
   }
   ESP_LOGW(TAG, "Update aborted at %" PRIu32 " bytes", this->offset_.load());
@@ -519,6 +584,9 @@ void ZigbeeOTAComponent::release_inflater_() {
 
 void ZigbeeOTAComponent::end_download_() {
   this->downloading_ = false;
+  // A checked image keeps the fast poll until the reboot (APPLY, FINISH).
+  if (!this->ended_.load())
+    this->set_updating_(false);
   this->release_inflater_();
   if (this->backend_ != nullptr) {
     this->backend_->abort();
