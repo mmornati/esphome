@@ -90,6 +90,7 @@ class ZigbeeOTAComponent : public ota::OTAComponent, public ZigbeeOTAListener, p
   bool query_on_join_{false};
   bool queried_{false};
   uint32_t query_sent_ms_{0};
+  uint32_t joined_ms_{0};
   std::atomic<bool> updating_{false};
   std::atomic<bool> awaiting_answer_{false};
 #ifdef USE_DEEP_SLEEP
