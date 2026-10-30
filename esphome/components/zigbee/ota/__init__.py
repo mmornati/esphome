@@ -36,6 +36,7 @@ CONF_COMPRESS = "compress"
 CONF_CONFIRM_TIMEOUT = "confirm_timeout"
 CONF_FAST_POLL_INTERVAL = "fast_poll_interval"
 CONF_QUERY_ON_JOIN = "query_on_join"
+CONF_JOIN_QUERY_DELAY = "join_query_delay"
 
 OTA_FILE_NAME = "firmware.zigbee.ota"
 PACKER_SCRIPT = "make_zigbee_ota.py"
@@ -82,6 +83,12 @@ CONFIG_SCHEMA = cv.All(
             # update scheduled there starts when the device wakes. Defaults to
             # on for a sleepy end device.
             cv.Optional(CONF_QUERY_ON_JOIN): cv.boolean,
+            # Wait this long after the join before asking: a sleepy device lost
+            # its parent often in the first minute after boot (and at safe_mode's
+            # flash write once the boot is considered good).
+            cv.Optional(
+                CONF_JOIN_QUERY_DELAY, default="70s"
+            ): cv.positive_time_period_milliseconds,
         }
     )
     .extend(BASE_OTA_SCHEMA)
@@ -110,6 +117,7 @@ async def to_code(config: ConfigType) -> None:
     sleepy = bool((CORE.config.get("zigbee") or {}).get("sleepy"))
     if config.get(CONF_QUERY_ON_JOIN, sleepy):
         cg.add(var.set_query_on_join(True))
+        cg.add(var.set_join_query_delay(config[CONF_JOIN_QUERY_DELAY]))
     deep_sleep_conf = CORE.config.get("deep_sleep") or {}
     if CONF_ID in deep_sleep_conf:
         # Stays awake from the query to the end of the download.

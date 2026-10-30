@@ -39,6 +39,7 @@ class ZigbeeOTAComponent : public ota::OTAComponent, public ZigbeeOTAListener, p
   void set_image_type(uint16_t image_type) { this->image_type_ = image_type; }
   void set_fast_poll_interval(uint32_t fast_poll_ms) { this->fast_poll_ms_ = fast_poll_ms; }
   void set_query_on_join(bool query_on_join) { this->query_on_join_ = query_on_join; }
+  void set_join_query_delay(uint32_t delay_ms) { this->join_query_delay_ms_ = delay_ms; }
 #ifdef USE_DEEP_SLEEP
   void set_deep_sleep(deep_sleep::DeepSleepComponent *deep_sleep) { this->deep_sleep_ = deep_sleep; }
 #endif
@@ -88,7 +89,8 @@ class ZigbeeOTAComponent : public ota::OTAComponent, public ZigbeeOTAListener, p
   // Ask the server for an image once joined after boot, so an update scheduled
   // in the coordinator starts when a sleeping device wakes.
   bool query_on_join_{false};
-  bool queried_{false};
+  std::atomic<uint8_t> join_queries_{0};
+  uint32_t join_query_delay_ms_{70000};
   uint32_t query_sent_ms_{0};
   uint32_t joined_ms_{0};
   std::atomic<bool> updating_{false};

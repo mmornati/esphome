@@ -44,9 +44,9 @@ static constexpr uint8_t MAX_RESYNCS = 50;
 static constexpr uint32_t CONFIRM_QUERY_MS = 30000;
 // After a query, stay awake (no deep sleep) this long for the answer.
 static constexpr uint32_t QUERY_ANSWER_MS = 15000;
-// A query sent right when the stack reports the join after boot was lost on hardware;
-// wait this long after the join before asking.
-static constexpr uint32_t QUERY_JOIN_DELAY_MS = 5000;
+// Join queries sent when no offer follows (a rejoin can lose the query or the answer).
+static constexpr uint8_t JOIN_QUERIES = 3;
+static constexpr uint32_t JOIN_QUERY_RETRY_MS = 30000;
 
 #ifdef USE_ZIGBEE_OTA_CONFIRM
 static ZigbeeOTAComponent *pending_confirm_instance = nullptr;  // NOLINT
@@ -109,11 +109,13 @@ void ZigbeeOTAComponent::loop() {
     this->confirm_loop_(now);
 #endif
 
-  if (this->query_on_join_ && !this->queried_ && this->parent_->is_joined() && this->joined_ms_ == 0)
+  if (this->query_on_join_ && this->joined_ms_ == 0 && this->parent_->is_joined())
     this->joined_ms_ = now == 0 ? 1 : now;
-  if (this->query_on_join_ && !this->queried_ && this->joined_ms_ != 0 &&
-      now - this->joined_ms_ >= QUERY_JOIN_DELAY_MS) {
-    this->queried_ = true;
+  if (this->query_on_join_ && this->joined_ms_ != 0 && this->join_queries_ < JOIN_QUERIES && !this->updating_.load() &&
+      this->parent_->is_joined() &&
+      (this->join_queries_ == 0 ? now - this->joined_ms_ >= this->join_query_delay_ms_
+                                : now - this->query_sent_ms_ >= JOIN_QUERY_RETRY_MS)) {
+    this->join_queries_++;
     this->query_sent_ms_ = now;
 #ifdef USE_DEEP_SLEEP
     if (this->deep_sleep_ != nullptr) {
@@ -244,6 +246,8 @@ void ZigbeeOTAComponent::on_ota_action(ezb_zcl_core_action_callback_id_t callbac
                msg->in.image.file_version, msg->in.image.size);
     } else {
       ESP_LOGD(TAG, "No image available (0x%02X)", msg->in.image.status);
+      // The server answered: no need to ask again after the join.
+      this->join_queries_ = JOIN_QUERIES;
     }
     msg->out.result = EZB_ZCL_STATUS_SUCCESS;
     return;
