@@ -10,6 +10,9 @@
 #include "esphome/core/application.h"
 #include "esphome/core/log.h"
 #include "zigbee_helpers_esp32.h"
+#ifdef USE_ZIGBEE_OTA
+#include "ezbee/zcl/cluster/ota_upgrade.h"
+#endif
 #ifdef USE_WIFI
 #include "esp_coexist.h"
 #endif
@@ -199,6 +202,14 @@ static void zb_action_handler(ezb_zcl_core_action_callback_id_t callback_id, voi
     case EZB_ZCL_CORE_SET_ATTR_VALUE_CB_ID:
       zb_attribute_handler((ezb_zcl_set_attr_value_message_t *) message);
       break;
+#ifdef USE_ZIGBEE_OTA
+    case EZB_ZCL_CORE_OTA_UPGRADE_CLIENT_PROGRESS_CB_ID:
+    case EZB_ZCL_CORE_OTA_UPGRADE_QUERY_NEXT_IMAGE_RSP_CB_ID:
+      if (global_zigbee->get_ota_listener() != nullptr) {
+        global_zigbee->get_ota_listener()->on_ota_action(callback_id, message);
+      }
+      break;
+#endif
     case EZB_ZCL_CORE_DEFAULT_RSP_CB_ID: {
 #ifdef ESPHOME_LOG_HAS_VERBOSE
       ezb_zcl_cmd_default_rsp_message_t *default_rsp = (ezb_zcl_cmd_default_rsp_message_t *) message;
@@ -242,6 +253,36 @@ void ZigbeeComponent::add_cluster(uint8_t endpoint_id, uint16_t cluster_id, uint
   esphome_zb_add_or_update_cluster(cluster_id, ep_desc, role);
   ESP_LOGD(TAG, "Endpoint %u: Added cluster 0x%04X with role %u", endpoint_id, cluster_id, role);
 }
+
+#ifdef USE_ZIGBEE_OTA
+void ZigbeeComponent::add_ota_client_cluster(uint8_t endpoint_id, uint16_t manufacturer_code, uint16_t image_type,
+                                             uint32_t file_version) {
+  ezb_af_ep_desc_t ep_desc = ezb_af_device_get_endpoint_desc(this->dev_desc_, endpoint_id);
+  if (ep_desc == NULL) {
+    ESP_LOGE(TAG, "Endpoint %u does not exist, cannot add the OTA Upgrade client cluster", endpoint_id);
+    return;
+  }
+  ezb_zcl_ota_upgrade_cluster_client_config_t client_cfg = {
+      .upgrade_server_id = EZB_ZCL_OTA_UPGRADE_UPGRADE_SERVER_ID_DEFAULT_VALUE,
+      .file_offset = 0,
+      .image_upgrade_status = EZB_ZCL_OTA_UPGRADE_IMAGE_UPGRADE_STATUS_DEFAULT_VALUE,
+      .manufacturer_id = manufacturer_code,
+      .image_type_id = image_type,
+  };
+  ezb_zcl_cluster_desc_t cluster_desc = ezb_zcl_ota_upgrade_create_cluster_desc(&client_cfg, EZB_ZCL_CLUSTER_CLIENT);
+  if (cluster_desc == NULL) {
+    ESP_LOGE(TAG, "Could not create the OTA Upgrade client cluster");
+    return;
+  }
+  // The attribute keeps a pointer to the value, so it must outlive the stack.
+  this->ota_file_version_ = file_version;
+  ezb_zcl_ota_upgrade_cluster_desc_add_attr(cluster_desc, EZB_ZCL_ATTR_OTA_UPGRADE_CURRENT_FILE_VERSION_ID,
+                                            &this->ota_file_version_);
+  if (ezb_af_endpoint_add_cluster_desc(ep_desc, cluster_desc) != EZB_ERR_NONE) {
+    ESP_LOGE(TAG, "Could not add the OTA Upgrade client cluster to endpoint %u", endpoint_id);
+  }
+}
+#endif
 
 void ZigbeeComponent::set_basic_cluster(const char *model, const char *manufacturer, const char *location,
                                         const char *sw_build_id, uint8_t power_source, uint8_t app_version) {

@@ -1,0 +1,10 @@
+<<: !include common_esp32.yaml
+
+ota:
+  - platform: zigbee
+    image_type: 0x0101
+    block_size: 128
+    on_progress:
+      - logger.log:
+          format: "Zigbee OTA %.0f%%"
+          args: ["x"]

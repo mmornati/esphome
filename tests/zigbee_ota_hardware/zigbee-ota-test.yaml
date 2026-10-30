@@ -1,0 +1,51 @@
+esphome:
+  name: zigbee-ota-test
+  friendly_name: Zigbee OTA test
+
+external_components:
+  - source: github://mmornati/esphome@zigbee-ota
+    components: [zigbee]
+
+esp32:
+  variant: esp32c6
+  board: seeed_xiao_esp32c6
+  framework:
+    type: esp-idf
+
+logger:
+  hardware_uart: USB_SERIAL_JTAG
+
+zigbee:
+  id: zb
+  router: true
+  model: ESPHomeOTATest
+  manufacturer: ESPHome
+
+ota:
+  - platform: zigbee
+    image_type: 0x0101
+    on_begin:
+      - logger.log: "Zigbee OTA started"
+    on_progress:
+      - logger.log:
+          format: "Zigbee OTA %.0f%%"
+          args: ["x"]
+    on_end:
+      - logger.log: "Zigbee OTA done, rebooting"
+    on_error:
+      - logger.log:
+          format: "Zigbee OTA error %d"
+          args: ["x"]
+
+sensor:
+  - platform: uptime
+    name: Uptime
+    update_interval: 60s
+  - platform: internal_temperature
+    name: Chip temperature
+    update_interval: 60s
+
+text_sensor:
+  - platform: version
+    name: ESPHome version
+    hide_timestamp: false

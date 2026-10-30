@@ -33,6 +33,14 @@ uint8_t *get_zcl_string(const char *str, uint8_t max_size, bool use_max_size = f
 
 class ZigbeeAttribute;
 
+#ifdef USE_ZIGBEE_OTA
+/// Receives the ZCL OTA Upgrade client callbacks of the stack. Called on the Zigbee task.
+class ZigbeeOTAListener {
+ public:
+  virtual void on_ota_action(ezb_zcl_core_action_callback_id_t callback_id, void *message) = 0;
+};
+#endif
+
 class ZigbeeComponent final : public Component {
  public:
   void setup() override;
@@ -60,6 +68,14 @@ class ZigbeeComponent final : public Component {
   void factory_reset();
   void report();
 
+#ifdef USE_ZIGBEE_OTA
+  /// Adds the OTA Upgrade client cluster to an endpoint. Must be called before setup().
+  void add_ota_client_cluster(uint8_t endpoint_id, uint16_t manufacturer_code, uint16_t image_type,
+                              uint32_t file_version);
+  void set_ota_listener(ZigbeeOTAListener *listener) { this->ota_listener_ = listener; }
+  ZigbeeOTAListener *get_ota_listener() const { return this->ota_listener_; }
+#endif
+
   template<typename F> void add_on_join_callback(F &&cb) { this->join_cb_.add(std::forward<F>(cb)); }
   template<typename F> void add_on_start_callback(F &&cb) { this->start_cb_.add(std::forward<F>(cb)); }
 
@@ -74,6 +90,10 @@ class ZigbeeComponent final : public Component {
 
  protected:
   bool sleepy_{false};
+#ifdef USE_ZIGBEE_OTA
+  ZigbeeOTAListener *ota_listener_{nullptr};
+  uint32_t ota_file_version_{0};
+#endif
   uint32_t keep_alive_{3000};
   struct {
     uint8_t *model;

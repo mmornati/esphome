@@ -791,6 +791,16 @@ def get_download_types(storage_json):
             "download": f"{storage_json.name}.ota.bin",
         }
     )
+    # Written by the zigbee OTA platform (ota: - platform: zigbee).
+    if (Path(storage_json.firmware_bin_path).parent / "firmware.zigbee.ota").is_file():
+        types.append(
+            {
+                "title": "Zigbee OTA format",
+                "description": "For updating over Zigbee from Zigbee2MQTT or ZHA.",
+                "file": "firmware.zigbee.ota",
+                "download": f"{storage_json.name}.zigbee.ota",
+            }
+        )
     return types
 
 

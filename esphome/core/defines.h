@@ -674,6 +674,8 @@
 #define USE_OPENTHREAD_SRP
 #define USE_OPENTHREAD_TLVS "0e080000000000010000"
 #define USE_ZIGBEE
+#define USE_ZIGBEE_OTA
+#define USE_ZIGBEE_OTA_CONFIRM
 #endif
 #if defined(USE_ESP32_VARIANT_ESP32S3)
 // Border router with a UART RCP; a native-radio border router (C5/C6) adds only the coexistence call
