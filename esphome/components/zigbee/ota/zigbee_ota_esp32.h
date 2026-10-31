@@ -47,6 +47,11 @@ class ZigbeeOTAComponent : public ota::OTAComponent, public ZigbeeOTAListener, p
 
  protected:
   enum class ImageFormat : uint8_t { NONE, RAW, ZLIB, DELTA };
+  // miniz's decompressor state; its type is only known in the .cpp.
+  struct Inflater;
+  struct InflaterDeleter {
+    void operator()(Inflater *inflater) const;
+  };
 
   ezb_zcl_status_t on_start_(uint32_t file_size, uint32_t file_version);
   ezb_zcl_status_t on_receiving_(uint32_t block_offset, const uint8_t *data, uint32_t len);
@@ -96,8 +101,8 @@ class ZigbeeOTAComponent : public ota::OTAComponent, public ZigbeeOTAListener, p
   uint8_t pending_[8]{};
   uint8_t pending_len_{0};
   ImageFormat format_{ImageFormat::NONE};
-  void *inflater_{nullptr};
-  uint8_t *window_{nullptr};
+  std::unique_ptr<Inflater, InflaterDeleter> inflater_;
+  RAMUniquePtr<uint8_t[]> window_;
   size_t window_pos_{0};
   bool inflate_done_{false};
   // Delta: header (magic, validation hash of the base image) then the patch.

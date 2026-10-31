@@ -117,8 +117,8 @@ float SafeModeComponent::get_setup_priority() const { return setup_priority::AFT
 void SafeModeComponent::confirm_app_image_() {
   if (this->app_confirmation_held_)
     return;
-    // Mark the running app image as valid so the bootloader will not roll back
-    // to the previously flashed image
+  // Mark the running app image as valid so the bootloader will not roll back
+  // to the previously flashed image
 #if defined(USE_ZEPHYR)
   if (!boot_is_img_confirmed()) {
     boot_write_img_confirmed();

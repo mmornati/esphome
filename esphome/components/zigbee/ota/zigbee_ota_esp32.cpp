@@ -18,7 +18,7 @@
 
 namespace esphome::zigbee {
 
-static const char *const TAG = "zigbee.ota";
+ESPHOME_LOG_TAG(TAG, "zigbee.ota");
 
 // OTA file layout (ZCL spec 11.4): a header whose length sits at offset 6, then
 // sub-elements of tag (2 bytes) + length (4 bytes) + data. The app image is in
@@ -65,6 +65,14 @@ static bool on_aps_indication(const ezb_apsde_data_ind_t *ind) {
   return false;
 }
 #endif
+
+struct ZigbeeOTAComponent::Inflater {
+  tinfl_decompressor decompressor;
+};
+
+void ZigbeeOTAComponent::InflaterDeleter::operator()(Inflater *inflater) const {
+  RAMAllocator<Inflater>().deallocate(inflater, 1);
+}
 
 void ZigbeeOTAComponent::setup() {
   this->parent_->set_ota_listener(this);
@@ -417,8 +425,9 @@ void ZigbeeOTAComponent::on_abort_() {
     // The new image was already selected: boot the running one again.
     ESP_LOGW(TAG, "Update aborted after the image check");
     esp_err_t err = esp_ota_set_boot_partition(esp_ota_get_running_partition());
-    if (err != ESP_OK)
+    if (err != ESP_OK) {
       ESP_LOGE(TAG, "Could not select the running image again: %s", esp_err_to_name(err));
+    }
     this->ended_ = false;
   }
   ESP_LOGW(TAG, "Update aborted at %" PRIu32 " bytes", this->offset_.load());
@@ -441,14 +450,17 @@ bool ZigbeeOTAComponent::begin_element_(uint16_t tag, uint32_t length) {
       this->format_ = ImageFormat::RAW;
       break;
     case TAG_IMAGE_ZLIB:
-      this->inflater_ = calloc(1, sizeof(tinfl_decompressor));
-      this->window_ = static_cast<uint8_t *>(malloc(TINFL_LZ_DICT_SIZE));
+      this->inflater_.reset(RAMAllocator<Inflater>(RAMAllocator<Inflater>::PREFER_INTERNAL).allocate(1));
+      this->window_ = RAMAllocator<uint8_t>(RAMAllocator<uint8_t>::PREFER_INTERNAL)
+                          .make_unique_array_for_overwrite(TINFL_LZ_DICT_SIZE);
       if (this->inflater_ == nullptr || this->window_ == nullptr) {
         ESP_LOGE(TAG, "No memory for the inflater");
         this->release_decoders_();
         return false;
       }
-      tinfl_init(static_cast<tinfl_decompressor *>(this->inflater_));
+      // Zeroed as calloc() did, then set to the state the first tinfl_decompress() call starts from.
+      *this->inflater_ = Inflater{};
+      tinfl_init(&this->inflater_->decompressor);
       this->format_ = ImageFormat::ZLIB;
       break;
     case TAG_IMAGE_DELTA:
@@ -490,17 +502,18 @@ bool ZigbeeOTAComponent::write_image_(const uint8_t *data, size_t len) {
 }
 
 bool ZigbeeOTAComponent::inflate_(const uint8_t *data, uint32_t len, bool last) {
-  auto *inflater = static_cast<tinfl_decompressor *>(this->inflater_);
+  tinfl_decompressor *inflater = &this->inflater_->decompressor;
+  uint8_t *window = this->window_.get();
   const int flags = TINFL_FLAG_PARSE_ZLIB_HEADER | (last ? 0 : TINFL_FLAG_HAS_MORE_INPUT);
   while (!this->inflate_done_) {
     size_t in_bytes = len;
     size_t out_bytes = TINFL_LZ_DICT_SIZE - this->window_pos_;
-    tinfl_status status = tinfl_decompress(inflater, data, &in_bytes, this->window_, this->window_ + this->window_pos_,
-                                           &out_bytes, flags);
+    tinfl_status status =
+        tinfl_decompress(inflater, data, &in_bytes, window, window + this->window_pos_, &out_bytes, flags);
     data += in_bytes;
     len -= in_bytes;
     if (out_bytes > 0) {
-      if (!this->write_image_(this->window_ + this->window_pos_, out_bytes))
+      if (!this->write_image_(window + this->window_pos_, out_bytes))
         return false;
       this->window_pos_ = (this->window_pos_ + out_bytes) & (TINFL_LZ_DICT_SIZE - 1);
     }
@@ -569,8 +582,9 @@ bool ZigbeeOTAComponent::finish_element_() {
       if (this->delta_ == nullptr)
         return false;
       esp_err_t err = esp_delta_ota_finalize(this->delta_);
-      if (err != ESP_OK)
+      if (err != ESP_OK) {
         ESP_LOGE(TAG, "Delta incomplete: %s", esp_err_to_name(err));
+      }
       return err == ESP_OK;
     }
     default:
@@ -579,10 +593,8 @@ bool ZigbeeOTAComponent::finish_element_() {
 }
 
 void ZigbeeOTAComponent::release_decoders_() {
-  free(this->inflater_);
-  this->inflater_ = nullptr;
-  free(this->window_);
-  this->window_ = nullptr;
+  this->inflater_.reset();
+  this->window_.reset();
   this->window_pos_ = 0;
   this->inflate_done_ = false;
   if (this->delta_ != nullptr)

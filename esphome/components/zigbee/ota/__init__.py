@@ -20,12 +20,19 @@ from esphome.components.esp32 import (
 )
 from esphome.components.ota import BASE_OTA_SCHEMA, OTAComponent, ota_to_code
 import esphome.config_validation as cv
-from esphome.const import CONF_ADVANCED, CONF_ENDPOINT, CONF_FRAMEWORK, CONF_ID
-from esphome.core import CORE
+from esphome.const import (
+    CONF_ADVANCED,
+    CONF_ENABLE_OTA_ROLLBACK,
+    CONF_ENDPOINT,
+    CONF_FRAMEWORK,
+    CONF_ID,
+)
+from esphome.core import CORE, EsphomeError
 from esphome.coroutine import CoroPriority, coroutine_with_priority
 from esphome.types import ConfigType
 
-from ..const import ZigbeeComponent
+from ..const import KEY_ZIGBEE, ZigbeeComponent
+from ..const_esp32 import KEY_ZIGBEE_EP
 from ..const_zephyr import CONF_ZIGBEE_ID
 from ..zigbee_ep_esp32 import get_first_ep_num
 
@@ -81,8 +88,8 @@ CONFIG_SCHEMA = cv.All(
             cv.Optional(CONF_COMPRESS, default=True): cv.boolean,
             # A new image is confirmed only once the coordinator is heard (any
             # frame from it, or an answer to Query Next Image); without that in
-            # this time the bootloader rolls back to the previous image. 0s
-            # leaves it to safe_mode alone.
+            # this time the bootloader rolls back to the previous image. 0s, or
+            # a build without OTA rollback, leaves it to safe_mode alone.
             cv.Optional(
                 CONF_CONFIRM_TIMEOUT, default="10min"
             ): cv.positive_time_period_milliseconds,
@@ -109,13 +116,29 @@ async def to_code(config: ConfigType) -> None:
 
     file_version = config.get(CONF_FILE_VERSION, int(time.time()) & 0xFFFFFFFF)
     endpoint = config.get(CONF_ENDPOINT) or get_first_ep_num()
+    # The zigbee component numbers its endpoints in final validation, so the
+    # list is only complete here.
+    if endpoint not in CORE.data[KEY_ZIGBEE][KEY_ZIGBEE_EP]:
+        raise EsphomeError(
+            f"Zigbee OTA: endpoint {endpoint} does not exist. Leave out 'endpoint' "
+            "to use the first endpoint."
+        )
     cg.add(var.set_endpoint(endpoint))
     cg.add(var.set_block_size(config[CONF_BLOCK_SIZE]))
     cg.add(var.set_file_version(file_version))
     cg.add(var.set_manufacturer_code(config[CONF_MANUFACTURER_CODE]))
     cg.add(var.set_image_type(config[CONF_IMAGE_TYPE]))
+    advanced = (
+        CORE.config.get("esp32", {}).get(CONF_FRAMEWORK, {}).get(CONF_ADVANCED, {})
+    )
     safe_mode_conf = CORE.config.get("safe_mode") or {}
-    if config[CONF_CONFIRM_TIMEOUT] and CONF_ID in safe_mode_conf:
+    # Holding back safe_mode's confirmation needs the bootloader rollback, which
+    # the esp32 component also turns off when safe_mode is disabled.
+    if (
+        config[CONF_CONFIRM_TIMEOUT].total_milliseconds
+        and advanced.get(CONF_ENABLE_OTA_ROLLBACK)
+        and CONF_ID in safe_mode_conf
+    ):
         cg.add_define("USE_ZIGBEE_OTA_CONFIRM")
         cg.add(var.set_safe_mode(await cg.get_variable(safe_mode_conf[CONF_ID])))
         cg.add(var.set_confirm_timeout(config[CONF_CONFIRM_TIMEOUT]))
@@ -155,9 +178,6 @@ async def to_code(config: ConfigType) -> None:
     # A key in the config signs <name>.bin before gen_project_binary ends, so
     # the OTA file wraps the signed image. Signed outside the build, the image
     # has to be wrapped again after signing.
-    advanced = (
-        CORE.config.get("esp32", {}).get(CONF_FRAMEWORK, {}).get(CONF_ADVANCED, {})
-    )
     signed = advanced.get("signed_ota_verification")
     if signed and "signing_key" not in signed:
         _LOGGER.warning(
