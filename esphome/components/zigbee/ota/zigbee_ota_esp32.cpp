@@ -9,6 +9,7 @@
 #include "esp_zigbee.h"
 #include "ezbee/aps.h"
 #include "ezbee/zcl/cluster/ota_upgrade.h"
+#include "esp_delta_ota.h"
 #include "miniz.h"
 
 #include "esphome/core/application.h"
@@ -26,6 +27,11 @@ ESPHOME_LOG_TAG(TAG, "zigbee.ota");
 static constexpr uint32_t OTA_FILE_IDENTIFIER = 0x0BEEF11E;
 static constexpr uint16_t TAG_UPGRADE_IMAGE = 0x0000;
 static constexpr uint16_t TAG_IMAGE_ZLIB = 0xF100;
+// esp_delta_ota patch (detools, heatshrink) against the running image, behind a
+// 64-byte header: magic, the running image's validation hash, reserved.
+static constexpr uint16_t TAG_IMAGE_DELTA = 0xF101;
+static constexpr uint32_t DELTA_MAGIC = 0xFCCDDE10;
+static constexpr uint8_t DELTA_HEADER_LEN = 64;
 static constexpr uint8_t SUB_ELEMENT_HEADER_LEN = 6;
 static constexpr uint32_t MIN_HEADER_LEN = 56;
 // The stack asks again for a block whose answer has not come within this time
@@ -390,9 +396,8 @@ ezb_zcl_status_t ZigbeeOTAComponent::on_check_() {
   ESP_LOGI(TAG, "Download complete: %" PRIu32 " bytes, image %" PRIu32 " bytes", this->offset_.load(),
            this->image_written_);
   const bool complete = !this->failed_ && this->backend_ != nullptr && this->offset_.load() == this->file_size_ &&
-                        this->element_left_ == 0 && this->image_written_ > 0 &&
-                        (this->format_ != ImageFormat::ZLIB || this->inflate_done_);
-  this->release_inflater_();
+                        this->element_left_ == 0 && this->finish_element_() && this->image_written_ > 0;
+  this->release_decoders_();
   if (!complete) {
     ESP_LOGE(TAG, "Incomplete image");
     this->end_download_();
@@ -439,7 +444,7 @@ void ZigbeeOTAComponent::on_abort_() {
 }
 
 bool ZigbeeOTAComponent::begin_element_(uint16_t tag, uint32_t length) {
-  this->release_inflater_();
+  this->release_decoders_();
   switch (tag) {
     case TAG_UPGRADE_IMAGE:
       this->format_ = ImageFormat::RAW;
@@ -450,13 +455,17 @@ bool ZigbeeOTAComponent::begin_element_(uint16_t tag, uint32_t length) {
                           .make_unique_array_for_overwrite(TINFL_LZ_DICT_SIZE);
       if (this->inflater_ == nullptr || this->window_ == nullptr) {
         ESP_LOGE(TAG, "No memory for the inflater");
-        this->release_inflater_();
+        this->release_decoders_();
         return false;
       }
       // Zeroed as calloc() did, then set to the state the first tinfl_decompress() call starts from.
       *this->inflater_ = Inflater{};
       tinfl_init(&this->inflater_->decompressor);
       this->format_ = ImageFormat::ZLIB;
+      break;
+    case TAG_IMAGE_DELTA:
+      this->delta_header_len_ = 0;
+      this->format_ = ImageFormat::DELTA;
       break;
     default:
       // Some other sub-element (signature, certificate, ...): skipped.
@@ -473,6 +482,8 @@ bool ZigbeeOTAComponent::write_element_(const uint8_t *data, uint32_t len, bool 
       return this->write_image_(data, len);
     case ImageFormat::ZLIB:
       return this->inflate_(data, len, last);
+    case ImageFormat::DELTA:
+      return this->write_delta_(data, len);
     case ImageFormat::NONE:
       break;
   }
@@ -520,17 +531,82 @@ bool ZigbeeOTAComponent::inflate_(const uint8_t *data, uint32_t len, bool last) 
   return true;
 }
 
-void ZigbeeOTAComponent::release_inflater_() {
+bool ZigbeeOTAComponent::write_delta_(const uint8_t *data, uint32_t len) {
+  if (this->delta_ == nullptr) {
+    // The header first: refuse a patch for another image before starting the patch engine.
+    const uint32_t take = std::min<uint32_t>(len, DELTA_HEADER_LEN - this->delta_header_len_);
+    memcpy(this->delta_header_ + this->delta_header_len_, data, take);
+    this->delta_header_len_ += take;
+    data += take;
+    len -= take;
+    if (this->delta_header_len_ < DELTA_HEADER_LEN)
+      return true;
+    uint32_t magic;
+    memcpy(&magic, this->delta_header_, 4);
+    uint8_t running_hash[32];
+    if (magic != DELTA_MAGIC || esp_partition_get_sha256(esp_ota_get_running_partition(), running_hash) != ESP_OK ||
+        memcmp(running_hash, this->delta_header_ + 4, sizeof(running_hash)) != 0) {
+      ESP_LOGE(TAG, "Delta is not for the running image (%s)", magic != DELTA_MAGIC ? "magic" : "hash");
+      return false;
+    }
+    esp_delta_ota_cfg_t cfg = {};
+    cfg.user_data = this;
+    cfg.read_cb_with_user_data = [](uint8_t *buf, size_t size, int src_offset, void *) -> esp_err_t {
+      return esp_partition_read(esp_ota_get_running_partition(), src_offset, buf, size);
+    };
+    cfg.write_cb_with_user_data = [](const uint8_t *buf, size_t size, void *user_data) -> esp_err_t {
+      return static_cast<ZigbeeOTAComponent *>(user_data)->write_image_(buf, size) ? ESP_OK : ESP_FAIL;
+    };
+    this->delta_ = esp_delta_ota_init(&cfg);
+    if (this->delta_ == nullptr) {
+      ESP_LOGE(TAG, "No memory for the delta engine");
+      return false;
+    }
+    ESP_LOGI(TAG, "Delta matches the running image");
+  }
+  if (len == 0)
+    return true;
+  esp_err_t err = esp_delta_ota_feed_patch(this->delta_, data, len);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Applying the delta failed: %s", esp_err_to_name(err));
+    return false;
+  }
+  return true;
+}
+
+bool ZigbeeOTAComponent::finish_element_() {
+  switch (this->format_) {
+    case ImageFormat::ZLIB:
+      return this->inflate_done_;
+    case ImageFormat::DELTA: {
+      if (this->delta_ == nullptr)
+        return false;
+      esp_err_t err = esp_delta_ota_finalize(this->delta_);
+      if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Delta incomplete: %s", esp_err_to_name(err));
+      }
+      return err == ESP_OK;
+    }
+    default:
+      return true;
+  }
+}
+
+void ZigbeeOTAComponent::release_decoders_() {
   this->inflater_.reset();
   this->window_.reset();
   this->window_pos_ = 0;
   this->inflate_done_ = false;
+  if (this->delta_ != nullptr)
+    esp_delta_ota_deinit(this->delta_);
+  this->delta_ = nullptr;
+  this->delta_header_len_ = 0;
   this->format_ = ImageFormat::NONE;
 }
 
 void ZigbeeOTAComponent::end_download_() {
   this->downloading_ = false;
-  this->release_inflater_();
+  this->release_decoders_();
   if (this->backend_ != nullptr) {
     this->backend_->abort();
     this->backend_.reset();

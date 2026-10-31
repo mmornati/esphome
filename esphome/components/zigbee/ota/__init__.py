@@ -6,12 +6,18 @@ The received image goes through the regular ESP-IDF OTA backend, so rollback
 and safe mode work as for the other OTA platforms.
 """
 
+import importlib.util
 import logging
 from pathlib import Path
+import sys
 import time
 
 import esphome.codegen as cg
-from esphome.components.esp32 import add_extra_build_file, add_src_cmake
+from esphome.components.esp32 import (
+    add_extra_build_file,
+    add_idf_component,
+    add_src_cmake,
+)
 from esphome.components.ota import BASE_OTA_SCHEMA, OTAComponent, ota_to_code
 import esphome.config_validation as cv
 from esphome.const import (
@@ -41,12 +47,23 @@ CONF_FILE_VERSION = "file_version"
 CONF_BLOCK_SIZE = "block_size"
 CONF_COMPRESS = "compress"
 CONF_CONFIRM_TIMEOUT = "confirm_timeout"
+CONF_DELTA_BASE = "delta_base"
 
 OTA_FILE_NAME = "firmware.zigbee.ota"
+DELTA_FILE_NAME = "firmware.zigbee.delta.ota"
 PACKER_SCRIPT = "make_zigbee_ota.py"
 
 zigbee_ns = cg.esphome_ns.namespace("zigbee")
 ZigbeeOTAComponent = zigbee_ns.class_("ZigbeeOTAComponent", OTAComponent)
+
+
+def _require_detools(value):
+    if importlib.util.find_spec("detools") is None:
+        raise cv.Invalid(
+            f"'{CONF_DELTA_BASE}' needs detools in ESPHome's Python: pip install detools"
+        )
+    return value
+
 
 CONFIG_SCHEMA = cv.All(
     cv.Schema(
@@ -76,6 +93,10 @@ CONFIG_SCHEMA = cv.All(
             cv.Optional(
                 CONF_CONFIRM_TIMEOUT, default="10min"
             ): cv.positive_time_period_milliseconds,
+            # Also write firmware.zigbee.delta.ota, a delta against the image the
+            # device runs: its file version (every build keeps its image under
+            # .esphome/zigbee_ota/<name>/) or the path of its .bin.
+            cv.Optional(CONF_DELTA_BASE): cv.All(cv.string_strict, _require_detools),
         }
     )
     .extend(BASE_OTA_SCHEMA)
@@ -130,6 +151,9 @@ async def to_code(config: ConfigType) -> None:
         file_version,
     )
 
+    # Applies delta images (tag 0xF101) on the device.
+    add_idf_component(name="espressif/esp_delta_ota", ref="1.1.4")
+
     # Wrap the app image into a Zigbee OTA file after every build.
     add_extra_build_file(PACKER_SCRIPT, Path(__file__).parent / PACKER_SCRIPT)
     args = [
@@ -140,6 +164,16 @@ async def to_code(config: ConfigType) -> None:
     ]
     if not config[CONF_COMPRESS]:
         args.append("--no-compress")
+    archive = Path(CORE.data_dir) / "zigbee_ota" / CORE.name
+    pack_args = [*args, f'--archive "{archive.as_posix()}"']
+    # IDF's Python runs the packer; a delta needs detools, so ESPHome's own.
+    python = '"${_zb_ota_python}"'
+    if CONF_DELTA_BASE in config:
+        pack_args += [
+            f'--delta-base "{config[CONF_DELTA_BASE]}"',
+            f'--delta-output "${{CMAKE_BINARY_DIR}}/{DELTA_FILE_NAME}"',
+        ]
+        python = f'"{Path(sys.executable).as_posix()}"'
     # With signed OTA verification the device only accepts a signed image.
     # A key in the config signs <name>.bin before gen_project_binary ends, so
     # the OTA file wraps the signed image. Signed outside the build, the image
@@ -162,10 +196,10 @@ idf_build_get_property(_zb_ota_python PYTHON)
 # The app image comes from IDF's gen_project_binary target in the project
 # directory, whose output is not visible as a file dependency from here.
 add_custom_target(zigbee_ota_file ALL
-    COMMAND "${{_zb_ota_python}}" "${{CMAKE_SOURCE_DIR}}/{PACKER_SCRIPT}"
+    COMMAND {python} "${{CMAKE_SOURCE_DIR}}/{PACKER_SCRIPT}"
             "${{CMAKE_BINARY_DIR}}/${{CMAKE_PROJECT_NAME}}.bin"
             "${{CMAKE_BINARY_DIR}}/{OTA_FILE_NAME}"
-            {" ".join(args)}
+            {" ".join(pack_args)}
     BYPRODUCTS "${{CMAKE_BINARY_DIR}}/{OTA_FILE_NAME}"
     COMMENT "Generating Zigbee OTA file {OTA_FILE_NAME}"
     VERBATIM)

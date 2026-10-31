@@ -801,6 +801,17 @@ def get_download_types(storage_json):
                 "download": f"{storage_json.name}.zigbee.ota",
             }
         )
+    if (
+        Path(storage_json.firmware_bin_path).parent / "firmware.zigbee.delta.ota"
+    ).is_file():
+        types.append(
+            {
+                "title": "Zigbee OTA delta",
+                "description": "Delta against the firmware set as delta_base, for updating over Zigbee.",
+                "file": "firmware.zigbee.delta.ota",
+                "download": f"{storage_json.name}.zigbee.delta.ota",
+            }
+        )
     return types
 
 
