@@ -42,6 +42,7 @@ CLUSTER_ID = cluster_id.options(
     "OCCUPANCY_SENSING",
     "CARBON_DIOXIDE_MEASUREMENT",
     "PM2_5_MEASUREMENT",
+    "OTA_UPGRADE",
     prefix="EZB_ZCL_CLUSTER_ID_",
 )
 CLUSTER_ROLE = {

@@ -1,5 +1,6 @@
 zigbee:
   model: zigbee_test
+  manufacturer_code: 0x1234
   router: true
   power_source: MAINS_SINGLE_PHASE
   on_join:
@@ -8,3 +9,12 @@ zigbee:
 
 time:
   - platform: zigbee
+
+ota:
+  - platform: zigbee
+    image_type: 0x0101
+    block_size: 40
+    on_progress:
+      - logger.log:
+          format: "Zigbee OTA %.0f%%"
+          args: ["x"]

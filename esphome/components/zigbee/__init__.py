@@ -36,6 +36,7 @@ from esphome.types import ConfigType
 from .const import (  # noqa: F401
     CONF_CLUSTER,
     CONF_ENDPOINT,
+    CONF_MANUFACTURER_CODE,
     CONF_MAX_EP_NUMBER,
     CONF_ON_JOIN,
     CONF_POWER_SOURCE,
@@ -118,6 +119,12 @@ CONFIG_SCHEMA = cv.All(
                 _validate_ascii,
             ),
             cv.Optional(CONF_VERSION, default=0): cv.uint8_t,
+            # Manufacturer code of the node descriptor and of OTA images. Without
+            # it the stack's default stays in the node descriptor and OTA uses 0.
+            cv.Optional(CONF_MANUFACTURER_CODE): cv.All(
+                cv.requires_component(ESP32_DOMAIN),
+                cv.hex_uint16_t,
+            ),
             cv.Optional(CONF_ROUTER, default=False): cv.boolean,
             cv.Optional(CONF_ON_JOIN): automation.validate_automation({}),
             cv.Optional(CONF_ON_START): automation.validate_automation({}),

@@ -4,6 +4,9 @@
 
 #include "zigbee_helpers_esp32.h"
 #include "ezbee/zha.h"
+#ifdef USE_ZIGBEE_OTA
+#include "ezbee/zcl/cluster/ota_upgrade.h"
+#endif
 
 ezb_err_t esphome_zb_cluster_add_or_update_attr(uint16_t cluster_id, ezb_zcl_cluster_desc_t cluster_desc,
                                                 uint16_t attr_id, void *value_p) {
@@ -94,6 +97,10 @@ ezb_zcl_cluster_desc_t esphome_zb_default_cluster_dscr_create(uint16_t cluster_i
       return ezb_zcl_carbon_dioxide_measurement_create_cluster_desc(NULL, role_mask);
     case EZB_ZCL_CLUSTER_ID_PM2_5_MEASUREMENT:
       return ezb_zcl_pm2_5_measurement_create_cluster_desc(NULL, role_mask);
+#ifdef USE_ZIGBEE_OTA
+    case EZB_ZCL_CLUSTER_ID_OTA_UPGRADE:
+      return ezb_zcl_ota_upgrade_create_cluster_desc(NULL, role_mask);
+#endif
     default: {
       ezb_zcl_custom_cluster_config_t config = {0};
       config.cluster_id = cluster_id;
@@ -137,6 +144,10 @@ ezb_err_t esphome_zb_cluster_add_attr(uint16_t cluster_id, ezb_zcl_cluster_desc_
       return ezb_zcl_carbon_dioxide_measurement_cluster_desc_add_attr(cluster_desc, attr_id, value_p);
     case EZB_ZCL_CLUSTER_ID_PM2_5_MEASUREMENT:
       return ezb_zcl_pm2_5_measurement_cluster_desc_add_attr(cluster_desc, attr_id, value_p);
+#ifdef USE_ZIGBEE_OTA
+    case EZB_ZCL_CLUSTER_ID_OTA_UPGRADE:
+      return ezb_zcl_ota_upgrade_cluster_desc_add_attr(cluster_desc, attr_id, value_p);
+#endif
     default:
       return EZB_ERR_NOT_FOUND;
   }

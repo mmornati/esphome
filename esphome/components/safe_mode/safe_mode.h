@@ -38,6 +38,14 @@ class SafeModeComponent final : public Component {
 
   void mark_successful();
 
+#ifdef USE_OTA_ROLLBACK
+  /// Keep the running app image unconfirmed (rollback armed) until release_app_confirmation(),
+  /// for a component that needs more proof than boot_is_good_after (e.g. reaching its OTA server).
+  void hold_app_confirmation() { this->app_confirmation_held_ = true; }
+  /// Confirm the running app image now if the boot was already considered successful, else when it is.
+  void release_app_confirmation();
+#endif
+
 #ifdef USE_SAFE_MODE_CALLBACK
   template<typename F> void add_on_safe_mode_callback(F &&callback) {
     this->safe_mode_callback_.add(std::forward<F>(callback));
@@ -61,6 +69,9 @@ class SafeModeComponent final : public Component {
 #endif
   // Group 1-byte members together to minimize padding
   bool boot_successful_{false};  ///< set to true after boot is considered successful
+#ifdef USE_OTA_ROLLBACK
+  bool app_confirmation_held_{false};
+#endif
   uint8_t safe_mode_num_attempts_{0};
 #if defined(USE_ESP32) && defined(USE_OTA_ROLLBACK)
   bool app_ota_possible_{true};

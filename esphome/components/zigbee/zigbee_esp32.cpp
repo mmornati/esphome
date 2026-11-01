@@ -10,6 +10,9 @@
 #include "esphome/core/application.h"
 #include "esphome/core/log.h"
 #include "zigbee_helpers_esp32.h"
+#ifdef USE_ZIGBEE_OTA
+#include "ezbee/zcl/cluster/ota_upgrade.h"
+#endif
 #ifdef USE_WIFI
 #include "esp_coexist.h"
 #endif
@@ -199,6 +202,14 @@ static void zb_action_handler(ezb_zcl_core_action_callback_id_t callback_id, voi
     case EZB_ZCL_CORE_SET_ATTR_VALUE_CB_ID:
       zb_attribute_handler((ezb_zcl_set_attr_value_message_t *) message);
       break;
+#ifdef USE_ZIGBEE_OTA
+    case EZB_ZCL_CORE_OTA_UPGRADE_CLIENT_PROGRESS_CB_ID:
+    case EZB_ZCL_CORE_OTA_UPGRADE_QUERY_NEXT_IMAGE_RSP_CB_ID:
+      if (global_zigbee->get_ota_listener() != nullptr) {
+        global_zigbee->get_ota_listener()->on_ota_action(callback_id, message);
+      }
+      break;
+#endif
     case EZB_ZCL_CORE_DEFAULT_RSP_CB_ID: {
 #ifdef ESPHOME_LOG_HAS_VERBOSE
       ezb_zcl_cmd_default_rsp_message_t *default_rsp = (ezb_zcl_cmd_default_rsp_message_t *) message;
@@ -294,6 +305,16 @@ bool ZigbeeComponent::register_device() {
     this->mark_failed();
     return false;
   }
+#ifdef USE_ZIGBEE_OTA
+  // These look up the OTA client by endpoint, so only after registration; the stack is not running yet.
+  if (this->ota_endpoint_ != 0) {
+    ezb_err_t err = ezb_zcl_ota_upgrade_set_download_block_size(this->ota_endpoint_, this->ota_block_size_);
+    if (err == EZB_ERR_NONE)
+      err = ezb_zcl_ota_upgrade_set_download_retry(this->ota_endpoint_, this->ota_retries_, this->ota_retry_ms_);
+    if (err != EZB_ERR_NONE)
+      ESP_LOGE(TAG, "Could not set the OTA download settings (%d)", err);
+  }
+#endif
   return true;
 }
 
@@ -387,6 +408,8 @@ void ZigbeeComponent::setup() {
       .current_power_source_level = EZB_AF_NODE_POWER_SOURCE_LEVEL_100_PERCENT,
   };
   ezb_af_set_node_power_desc(&desc);
+  if (this->has_manufacturer_code_)
+    ezb_af_node_desc_set_manuf_code(this->manufacturer_code_);
 
   // Start the Zigbee task with priority 1 to ensure main loop can still run even if Zigbee is busy
   xTaskCreate(ezb_task, "Zigbee_main", 4096, NULL, 1, NULL);
