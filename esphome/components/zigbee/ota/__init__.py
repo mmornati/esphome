@@ -154,7 +154,7 @@ FINAL_VALIDATE_SCHEMA = _final_validate
 async def to_code(config: ConfigType) -> None:
     cg.add_define("USE_ZIGBEE_OTA")
     var = cg.new_Pvariable(config[CONF_ID])
-    await ota_to_code(var, config)
+    # ota_to_code waits until past safe mode, so set up first.
     await cg.register_component(var, config)
     zb = await cg.get_variable(config[CONF_ZIGBEE_ID])
     cg.add(var.set_parent(zb))
@@ -186,6 +186,7 @@ async def to_code(config: ConfigType) -> None:
         cg.add_define("USE_ZIGBEE_OTA_CONFIRM")
         cg.add(var.set_safe_mode(await cg.get_variable(safe_mode_conf[CONF_ID])))
         cg.add(var.set_confirm_timeout(config[CONF_CONFIRM_TIMEOUT]))
+    await ota_to_code(var, config)
 
     # Wrap the app image into a Zigbee OTA file after every build.
     add_extra_build_file(PACKER_SCRIPT, Path(__file__).parent / PACKER_SCRIPT)
